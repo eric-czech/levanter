@@ -5,7 +5,10 @@ import asyncio
 import dataclasses
 import logging
 import warnings
+import importlib
+from abc import ABC, abstractmethod
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import Callable, Mapping, Optional, Sequence, TypeVar
 
 import equinox as eqx
@@ -479,3 +482,49 @@ class _EvalRunningMeans(eqx.Module):
         z = RunningMean.zeros_like(total)
         per_tag = RunningMean.zeros_like(per_tag)
         return _EvalRunningMeans(z, per_tag, z, per_tag)
+
+
+@dataclass
+class EvalPluginConfig:
+    """Configuration for evaluation plugins."""
+
+    plugin_class: str
+    """Full module path to the plugin class (e.g., 'my.module.MyPlugin')."""
+    steps: Optional[int] = None
+    """Number of steps between plugin evaluations. If None, uses trainer's steps_per_eval."""
+
+
+class EvalPlugin(ABC):
+    """Abstract base class for evaluation plugins."""
+
+    @abstractmethod
+    def create_callback(
+        self,
+        *,
+        tokenizer: HfTokenizer,
+        device_mesh: Mesh,
+        compute_axis_mapping: ResourceMapping,
+        parameter_axis_mapping: ResourceMapping,
+        batch_size: int,
+    ) -> Callable[[StepInfo], None]:
+        """Create evaluation callback that will be called during training.
+
+        Args:
+            tokenizer: The tokenizer used for training
+            device_mesh: JAX device mesh for distributed computation
+            compute_axis_mapping: Axis mapping for computation
+            parameter_axis_mapping: Axis mapping for parameter storage
+            batch_size: Evaluation batch size
+
+        Returns:
+            A callback function that takes StepInfo and returns None
+        """
+        ...
+
+
+def load_eval_plugin(config: EvalPluginConfig) -> EvalPlugin:
+    """Load evaluation plugin from configuration."""
+    module_path, class_name = config.plugin_class.rsplit(".", 1)
+    module = importlib.import_module(module_path)
+    plugin_class = getattr(module, class_name)
+    return plugin_class()
